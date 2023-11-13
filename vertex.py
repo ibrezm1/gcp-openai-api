@@ -45,7 +45,7 @@ credentials, project_id = google.auth.default()
 # Get environment variable
 host = os.environ.get("HOST", "0.0.0.0")
 port = int(os.environ.get("PORT", 8000))
-debug = os.environ.get("DEBUG", False)
+debug = os.environ.get("DEBUG", True)
 print(f"Endpoint: http://{host}:{port}/")
 # Google Cloud
 project = os.environ.get("GOOGLE_CLOUD_PROJECT_ID", project_id)
@@ -233,6 +233,7 @@ def generate_stream_response_stop():
     }
 
 
+
 def generate_response(content: str):
     ts = int(time.time())
     id = f"cmpl-{secrets.token_hex(12)}"
@@ -253,7 +254,7 @@ def generate_response(content: str):
     }
 
 
-@app.post("/v1/chat/completions")
+@app.post("/v2/chat/completions")
 async def chat_completions(body: ChatBody, request: Request):
     """
     Creates a model response for the given chat conversation.
@@ -361,6 +362,171 @@ async def chat_completions(body: ChatBody, request: Request):
         return EventSourceResponse(stream(), ping=10000)
     else:
         return JSONResponse(content=generate_response(answer))
+
+
+
+from langchain.chat_models import ChatOpenAI
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.embeddings import TensorflowHubEmbeddings
+
+from langchain.vectorstores import DeepLake
+from langchain.document_loaders import TextLoader
+
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.vectorstores import Chroma
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.llms import OpenAI
+from langchain.chat_models import ChatOpenAI
+from langchain.chains import RetrievalQA
+from langchain.document_loaders import PyPDFLoader, TextLoader
+from langchain.document_loaders import UnstructuredFileLoader
+from langchain.chains import ConversationalRetrievalChain
+import re 
+
+def process_llm_response(llmresponse):
+    answer = llmresponse["answer"]
+    source =[]
+    for doc in llmresponse["source_documents"]:
+        clearnewline =  doc.page_content[:10].replace('\n', '')
+        url_text = re.sub(r'[^a-zA-Z0-9\s]', '', clearnewline)
+        print('@@@@@ ' + url_text)
+        docref = '[' + url_text + ']' + '(' + doc.metadata['source'] + ')'
+        source.append(docref)
+    source = ', '.join(source)
+    answer = answer + '\n\n' + source
+    return answer
+
+@app.post("/v1/chat/completions")
+async def chat_completions(body: ChatBody, request: Request):
+    """
+    Creates a model response for the given chat conversation.
+
+    https://platform.openai.com/docs/api-reference/chat/create
+    """
+
+    # Authorization via OPENAI_API_KEY
+    if request.headers.get("Authorization").split(" ")[1] != api_key:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "API key is wrong!")
+
+    if debug:
+        print(f"body = {body}")
+
+    # Get user question
+    question = body.messages[-1]
+    if question.role == 'user' or question.role == 'assistant':
+        question = question.content
+    else:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No Question Found")
+
+    # Overwrite defaults
+    temperature = float(body.temperature or default_temperature)
+    top_k = int(default_top_k)
+    top_p = float(body.top_p or default_top_p)
+    max_output_tokens = int(body.max_tokens or default_max_output_tokens)
+    # Note: Max output token:
+    # - chat-bison: 1024
+    # - codechat-bison: 2048
+    # - ..-32k: The total amount of input and output tokens adds up to 32k.
+    #           For example, if you specify 16k of input tokens,
+    #           then you can receive up to 16k of output tokens.
+    if model_name == 'codechat-bison':
+        if max_output_tokens > 2048:
+            max_output_tokens = 2048
+    elif model_name.find("32k"):
+        if max_output_tokens > 16000:
+            max_output_tokens = 16000
+    elif max_output_tokens > 1024:
+        max_output_tokens = 1024
+
+    # Wrapper around Vertex AI large language models
+    llm = ChatVertexAI(
+        model_name=model_name,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+        max_output_tokens=max_output_tokens
+    )
+
+    # Buffer for storing conversation memory
+    # Note: Max input token:
+    # - chat-bison: 4096
+    # - codechat-bison: 6144
+    memory = ConversationBufferMemory(
+        memory_key="chat_history",
+        max_token_limit=2048,
+        return_messages=True,
+        output_key='answer'
+    )
+    # Today
+    memory.chat_memory.add_user_message("What day is today?")
+    memory.chat_memory.add_ai_message(
+        datetime.date.today().strftime("Today is %A, %B %d, %Y")
+    )
+    # Add history
+    for message in body.messages:
+        # if message.role == 'system':
+        #     system_prompt = message.content
+        if message.role == 'user':
+            memory.chat_memory.add_user_message(message.content)
+        elif message.role == 'assistant':
+            memory.chat_memory.add_ai_message(message.content)
+
+    # Get Vertex AI output
+    dataset_path = "./deeplakev3"
+
+    url = "https://tfhub.dev/google/universal-sentence-encoder-multilingual/3"
+    embed_model = TensorflowHubEmbeddings(model_url=url)
+
+    readdb = DeepLake(dataset_path=dataset_path, read_only=True, embedding=embed_model)
+
+    conversation = ConversationalRetrievalChain.from_llm(
+        llm=llm,
+        retriever=readdb.as_retriever(),
+        return_source_documents=True,
+        memory=memory,
+    )
+    llmresponse = conversation({"question": question})
+    
+    
+    
+    answer = process_llm_response(llmresponse)
+    
+    if debug:
+        #print(f"response = {llmresponse}")
+        #for doc in llmresponse["source_documents"]:
+        #    print(f"doc = {doc.page_content[:10]}")
+        #    print(f"doc = {doc.metadata['source']}")
+        #    print("------- SEP -------")
+        print(f"answer = {answer}")
+        print(f"stream = {body.stream}")
+        print(f"model = {body.model}")
+        print(f"temperature = {temperature}")
+        print(f"top_k = {top_k}")
+        print(f"top_p = {top_p}")
+        print(f"max_output_tokens = {max_output_tokens}")
+        print(f"history = {memory.buffer}")
+
+    # Return output
+    if body.stream:
+        async def stream():
+            yield json.dumps(
+                generate_stream_response_start(),
+                ensure_ascii=False
+            )
+            yield json.dumps(
+                generate_stream_response(answer),
+                ensure_ascii=False
+            )
+            yield json.dumps(
+                generate_stream_response_stop(),
+                ensure_ascii=False
+            )
+        return EventSourceResponse(stream(), ping=10000)
+    else:
+        return JSONResponse(content=generate_response(answer))
+
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host=host, port=port)

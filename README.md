@@ -97,6 +97,10 @@ bash deploy.sh
 The software is tested on Python 3.11.
 You should create a [virtual environment](https://docs.python.org/3/library/venv.html) with the version of Python you want to use,
 and activate it before proceeding.
+```bash
+python3 -m venv tvenv
+source tvenv/bin/activate
+```
 
 You also need the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install).
 The Google Cloud CLI includes the `gcloud` command-line tool.
@@ -116,6 +120,7 @@ gcloud auth application-default login
 Set default project:
 
 ```bash
+gcloud config set project [PROJECT_ID]
 gcloud auth application-default set-quota-project [PROJECT_ID]
 ```
 
@@ -151,9 +156,9 @@ HTTP request and response formats are consistent with the [OpenAI API](https://p
 For example, to generate a chat completion, you can send a POST request to the `/v1/chat/completions` endpoint with the instruction as the request body:
 
 ```bash
-curl --location 'http://[ENDPOINT]/v1/chat/completions' \
+curl --location 'http://localhost:8000/v1/chat/completions' \
 --header 'Content-Type: application/json' \
---header 'Authorization: Bearer [API-KEY]' \
+--header 'Authorization: Bearer sk-XYZ' \
 --data '{
     "model": "gpt-3.5-turbo",
     "messages": [
