@@ -131,6 +131,7 @@ def get_models():
 
     https://platform.openai.com/docs/api-reference/models/list
     """
+    print("testmodels")
     id = f"modelperm-{secrets.token_hex(12)}"
     ts = int(time.time())
     models = {"data": [], "object": "list"}
@@ -182,6 +183,7 @@ def get_models():
         "root": "text-embedding-ada-002",
         "parent": None
     })
+    print(models)
     return models
 
 
